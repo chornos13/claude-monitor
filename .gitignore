@@ -1,0 +1,5 @@
+node_modules/
+
+# Runtime files (generated at runtime, not needed in repo)
+audit.log
+state.json
