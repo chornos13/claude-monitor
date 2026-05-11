@@ -119,7 +119,7 @@ function clearTimeoutsForAccount(accIndex) {
 
 app.post('/api/toggle-auto', (req, res) => {
     const { accountIndex, enabled } = req.body;
-    if (!accountIndex) return res.status(400).json({ error: "Missing accountIndex" });
+    if (accountIndex === undefined || accountIndex === null) return res.status(400).json({ error: "Missing accountIndex" });
     
     if (enabled) {
         autoAccounts.add(accountIndex);
@@ -135,6 +135,34 @@ app.post('/api/toggle-auto', (req, res) => {
     // NOTE: We do NOT re-parse cswap here to avoid double-scheduling.
     // The frontend will call /api/status after toggle which handles scheduling.
     res.json({ success: true, autoAccounts: Array.from(autoAccounts) });
+});
+
+app.post('/api/switch-account', (req, res) => {
+    const { accountIndex } = req.body;
+    if (accountIndex === undefined || accountIndex === null) return res.status(400).json({ error: "Missing accountIndex" });
+
+    writeLog(`[API] Manually switching to Account ${accountIndex}...`);
+    exec(`cswap --switch-to ${accountIndex}`, (error, stdout, stderr) => {
+        if (error) {
+            writeLog(`[API] Switch Error: ${error.message}`);
+            return res.status(500).json({ error: error.message });
+        }
+        writeLog(`[API] Switch Success: Switched to Account ${accountIndex}.`);
+        broadcastEvent('status-refresh', {});
+        res.json({ success: true });
+    });
+});
+
+app.post('/api/execute-test', (req, res) => {
+    const { accountIndex } = req.body;
+    if (accountIndex === undefined || accountIndex === null) return res.status(400).json({ error: "Missing accountIndex" });
+
+    executeClaudeTest(accountIndex, 'API', (err, stdout) => {
+        if (err) {
+            return res.status(500).json({ error: err.message });
+        }
+        res.json({ success: true, output: stdout });
+    });
 });
 
 function preCalculateForAccount(accIndex) {
@@ -245,6 +273,74 @@ function parseAndScheduleCron(output) {
     }
 }
 
+/**
+ * Helper to switch to an account, run the test prompt, and switch back.
+ */
+function executeClaudeTest(accIndex, reqSource = 'Scheduler', callback = null) {
+    writeLog(`[${reqSource}] Target Account ${accIndex}: starting test execution...`);
+    
+    // 1. Check list to find currently active account
+    exec('cswap --list', (listErr, listOut) => {
+        // 2. Check index
+        let previousActiveIndex = null;
+        if (!listErr) {
+            const activeMatch = listOut.match(/^\s*(\d+):\s*\S+.*\(active\)/m);
+            if (activeMatch) previousActiveIndex = parseInt(activeMatch[1]);
+        }
+        writeLog(`[${reqSource}] Active account before: ${previousActiveIndex ?? 'unknown'}`);
+
+        const needsSwitch = previousActiveIndex !== accIndex;
+        
+        // Helper to run the claude command (Step 4 & 5)
+        const runClaude = () => {
+            const claudeCmd = `claude -p "1+1=" --model claude-haiku-4-5-20251001 < /dev/null`;
+            exec(claudeCmd, (err, stdout, stderr) => {
+                // 5. Log the output
+                if (err) {
+                    writeLog(`[${reqSource}] Claude Error for Account ${accIndex}: ${err.message}`);
+                    if (stderr) writeLog(`[${reqSource}] Stderr: ${stderr.trim()}`);
+                } else {
+                    writeLog(`[${reqSource}] Claude Output for Account ${accIndex}: ${stdout.trim() || '(no output)'}`);
+                }
+                
+                // 6. Refresh list in UI
+                broadcastEvent('status-refresh', {});
+
+                // Step 7: Switch back if we displaced a different active account
+                if (needsSwitch && previousActiveIndex !== null) {
+                    writeLog(`[${reqSource}] Restoring active account to ${previousActiveIndex}...`);
+                    exec(`cswap --switch-to ${previousActiveIndex}`, (restoreErr) => {
+                        if (restoreErr) {
+                            writeLog(`[${reqSource}] Restore Error: ${restoreErr.message}`);
+                        } else {
+                            writeLog(`[${reqSource}] Restored account ${previousActiveIndex}.`);
+                            broadcastEvent('status-refresh', {});
+                        }
+                        if (callback) callback(err, stdout);
+                    });
+                } else {
+                    if (callback) callback(err, stdout);
+                }
+            });
+        };
+
+        // 3. If not the same index, switch first
+        if (needsSwitch) {
+            writeLog(`[${reqSource}] Switching to account ${accIndex}...`);
+            exec(`cswap --switch-to ${accIndex}`, (switchErr) => {
+                if (switchErr) {
+                    writeLog(`[${reqSource}] Switch Error: ${switchErr.message}`);
+                    if (callback) callback(switchErr);
+                    return;
+                }
+                runClaude();
+            });
+        } else {
+            runClaude();
+        }
+    });
+}
+
 function scheduleTask(accIndex, timeStr) {
     if (!activeTimeouts.has(accIndex)) {
         activeTimeouts.set(accIndex, new Map());
@@ -288,40 +384,8 @@ function scheduleTask(accIndex, timeStr) {
             return;
         }
 
-        // Step 1: Snapshot the currently active account before switching
-        exec('cswap --list', (listErr, listOut) => {
-            let previousActiveIndex = null;
-            if (!listErr) {
-                const activeMatch = listOut.match(/^\s*(\d+):\s*\S+.*\(active\)/m);
-                if (activeMatch) previousActiveIndex = parseInt(activeMatch[1]);
-            }
-            writeLog(`[Scheduler] Active account before switch: ${previousActiveIndex ?? 'unknown'}`);
-
-            // Step 2: Switch and run claude
-            writeLog(`[Scheduler] Executing cron job for Account ${accIndex}...`);
-            const cmd = `cswap --switch-to ${accIndex} && claude -p "1+1=" --model claude-haiku-4-5-20251001`;
-            exec(cmd, (err, stdout, stderr) => {
-                if (err) {
-                    writeLog(`[Scheduler] Execution Error: ${err.message}`);
-                } else {
-                    writeLog(`[Scheduler] Execution Success: Switched to Account ${accIndex} and sent test prompt.`);
-                    broadcastEvent('status-refresh', {});
-
-                    // Step 3: Switch back if we displaced a different active account
-                    if (previousActiveIndex !== null && previousActiveIndex !== accIndex) {
-                        writeLog(`[Scheduler] Restoring active account back to Account ${previousActiveIndex}...`);
-                        exec(`cswap --switch-to ${previousActiveIndex}`, (restoreErr) => {
-                            if (restoreErr) {
-                                writeLog(`[Scheduler] Restore Error: ${restoreErr.message}`);
-                            } else {
-                                writeLog(`[Scheduler] Restored active account to Account ${previousActiveIndex}.`);
-                                broadcastEvent('status-refresh', {});
-                            }
-                        });
-                    }
-                }
-            });
-
+        // Execute the test prompt using the helper
+        executeClaudeTest(accIndex, 'Scheduler', () => {
             if (activeTimeouts.has(accIndex)) activeTimeouts.get(accIndex).delete(timeStr);
         });
     }, delay);

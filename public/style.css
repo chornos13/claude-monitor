@@ -142,6 +142,67 @@ body {
     transform: translateY(0);
 }
 
+.switch-btn {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-primary);
+    padding: 4px 12px;
+    font-size: 0.75rem;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+}
+
+.switch-btn:hover {
+    background: var(--accent-color);
+    border-color: var(--accent-color);
+    box-shadow: 0 0 15px rgba(139, 92, 246, 0.4);
+    transform: translateY(-1px);
+}
+
+.switch-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.execute-btn {
+    background: rgba(45, 212, 191, 0.1);
+    color: #2dd4bf;
+    padding: 4px 12px;
+    font-size: 0.75rem;
+    border: 1px solid rgba(45, 212, 191, 0.2);
+    border-radius: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.execute-btn:hover {
+    background: #2dd4bf;
+    color: #0f172a;
+    box-shadow: 0 0 15px rgba(45, 212, 191, 0.4);
+    transform: translateY(-1px);
+}
+
+.execute-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.execute-btn svg {
+    transition: transform 0.3s ease;
+}
+
+.execute-btn.running svg {
+    animation: spin 1s linear infinite;
+}
+
 .primary-btn.spinning svg {
     animation: spin 1s linear infinite;
 }

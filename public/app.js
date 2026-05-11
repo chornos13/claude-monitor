@@ -111,7 +111,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="account-card ${acc.isActive ? 'active-account' : ''}">
                         <div class="account-header">
                             <span class="account-email">${acc.email}</span>
-                            ${acc.isActive ? '<span class="badge-active">Active</span>' : ''}
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <button class="btn execute-btn" data-account-index="${acc.index}" title="Execute Test Prompt">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                                    <span>Test</span>
+                                </button>
+                                ${acc.isActive ? '<span class="badge-active">Active</span>' : `<button class="btn switch-btn" data-account-index="${acc.index}">Switch</button>`}
+                            </div>
                         </div>
                         <div class="quota-section">
                             <div class="quota-item">
@@ -198,6 +204,71 @@ document.addEventListener('DOMContentLoaded', () => {
                     console.error(err);
                     e.target.checked = !isChecked; // Revert visually on error
                     alert('Error toggling auto-activate. Check console.');
+                }
+            });
+        });
+
+        // Add event listeners for switch buttons
+        container.querySelectorAll('.switch-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const accIndex = parseInt(e.target.dataset.accountIndex);
+                const originalText = e.target.textContent;
+                
+                try {
+                    e.target.disabled = true;
+                    e.target.textContent = 'Switching...';
+                    
+                    const res = await fetch('/api/switch-account', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ accountIndex: accIndex })
+                    });
+                    
+                    if (!res.ok) {
+                        const errorData = await res.json();
+                        throw new Error(errorData.error || 'Failed to switch account');
+                    }
+                    
+                    // The SSE stream will trigger a refresh via 'status-refresh' event
+                } catch(err) {
+                    console.error(err);
+                    alert(`Error switching account: ${err.message}`);
+                    e.target.disabled = false;
+                    e.target.textContent = originalText;
+                }
+            });
+        });
+
+        // Add event listeners for execute buttons
+        container.querySelectorAll('.execute-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const targetBtn = e.currentTarget;
+                const accIndex = parseInt(targetBtn.dataset.accountIndex);
+                const originalContent = targetBtn.innerHTML;
+                
+                try {
+                    targetBtn.disabled = true;
+                    targetBtn.classList.add('running');
+                    targetBtn.querySelector('span').textContent = 'Running...';
+                    
+                    const res = await fetch('/api/execute-test', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ accountIndex: accIndex })
+                    });
+                    
+                    if (!res.ok) {
+                        const errorData = await res.json();
+                        throw new Error(errorData.error || 'Failed to execute test');
+                    }
+                    
+                } catch(err) {
+                    console.error(err);
+                    alert(`Error executing test: ${err.message}`);
+                } finally {
+                    targetBtn.disabled = false;
+                    targetBtn.classList.remove('running');
+                    targetBtn.innerHTML = originalContent;
                 }
             });
         });
