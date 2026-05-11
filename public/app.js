@@ -17,11 +17,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(data.error || 'Failed to fetch status');
             }
 
-            // Parse Output
-            const parsedData = parseCswapOutput(data.output);
-            
             // Render Native UI
-            renderNativeUI(parsedData, outputEl, data.autoAccounts || []);
+            renderNativeUI(data.output, outputEl, data.autoAccounts || []);
 
             // Update Last Time
             const now = new Date();
@@ -42,55 +39,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    function parseCswapOutput(text) {
-        const result = { accounts: [], instances: [] };
-        let currentSection = '';
-        let currentAccount = null;
-
-        const lines = text.split('\n');
-        for (let line of lines) {
-            if (line.startsWith('Accounts:')) {
-                currentSection = 'accounts';
-                continue;
-            } else if (line.startsWith('Running instances:')) {
-                currentSection = 'instances';
-                continue;
-            }
-
-            if (currentSection === 'accounts') {
-                const accMatch = line.match(/^\s*(\d+):\s*([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/);
-                if (accMatch) {
-                    if (currentAccount) result.accounts.push(currentAccount);
-                    currentAccount = {
-                        index: parseInt(accMatch[1]),
-                        email: accMatch[2],
-                        isActive: line.includes('(active)'),
-                        quota5h: { percent: 0, text: '' },
-                        quota7d: { percent: 0, text: '' }
-                    };
-                } else if (currentAccount && line.includes('├ 5h:')) {
-                    const pctMatch = line.match(/(\d+)%/);
-                    currentAccount.quota5h.percent = pctMatch ? parseInt(pctMatch[1]) : 0;
-                    currentAccount.quota5h.text = line.replace(/.*├ 5h:\s*\d+%\s*/, '').trim();
-                } else if (currentAccount && line.includes('└ 7d:')) {
-                    const pctMatch = line.match(/(\d+)%/);
-                    currentAccount.quota7d.percent = pctMatch ? parseInt(pctMatch[1]) : 0;
-                    currentAccount.quota7d.text = line.replace(/.*└ 7d:\s*\d+%\s*/, '').trim();
-                }
-            } else if (currentSection === 'instances') {
-                const instMatch = line.match(/^\s*●\s*(.+?)\s+~?\/([^\s]+)\s+\((.+)\)/);
-                if (instMatch) {
-                    result.instances.push({
-                        name: instMatch[1].trim(),
-                        path: '~/' + instMatch[2].trim(),
-                        sessions: instMatch[3].trim()
-                    });
-                }
-            }
-        }
-        if (currentAccount) result.accounts.push(currentAccount);
-        return result;
-    }
 
     function renderNativeUI(data, container, autoAccounts) {
         let html = '';
