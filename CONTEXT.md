@@ -4,7 +4,8 @@
 
 - **Account**: A Claude account entity. It has an `index` (integer), an `email` (string), and `quotas`.
 - **Quota**: Usage limits for an account. There are two windows: `5h` (5 hours) and `7d` (7 days). Each quota has a `percentage` used and a `reset_time`.
-- **CLI Adapter**: The low-level interface to the `cswap` and `claude` command-line tools.
+- **CLI Adapter**: The low-level interface to the `cswap` and `claude` command-line tools (implemented by `ClaudeInterface`).
+- **Scheduler**: The module responsible for timing the auto-activations based on quota resets.
 - **Auto-activate**: The behavior of automatically switching to an account when its quota is available.
 - **Audit Log**: A persistent record of system actions, switches, and execution results.
 

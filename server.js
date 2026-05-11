@@ -1,12 +1,20 @@
 const path = require('path');
 const fs = require('fs');
 const ClaudeInterface = require('./claudeInterface');
+const Scheduler = require('./scheduler');
 
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3005;
 
 const claude = new ClaudeInterface({ log: writeLog });
+const scheduler = new Scheduler({ 
+    logger: writeLog, 
+    onExecute: async (index) => {
+        await claude.runTestPrompt(index);
+        broadcastEvent('status-refresh', {});
+    }
+});
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
@@ -37,7 +45,6 @@ function saveState() {
 }
 
 const autoAccounts = new Set();
-const activeTimeouts = new Map();
 
 // SSE clients for real-time log streaming
 const sseClients = new Set();
@@ -64,11 +71,11 @@ app.get('/api/status', async (req, res) => {
     try {
         const data = await claude.getStatus();
         
-        // Schedule auto-activations based on current status
-        parseAndScheduleCron(data);
+        // 1. Sync scheduler with new status
+        scheduler.sync(data.accounts, Array.from(autoAccounts));
 
         res.json({ 
-            output: data, // Structured data!
+            output: data,
             autoAccounts: Array.from(autoAccounts)
         });
     } catch (error) {
@@ -108,16 +115,6 @@ app.get('/api/logs', (req, res) => {
     }
 });
 
-function clearTimeoutsForAccount(accIndex) {
-    if (activeTimeouts.has(accIndex)) {
-        const timeouts = activeTimeouts.get(accIndex);
-        for (const [timeStr, timeoutId] of timeouts.entries()) {
-            clearTimeout(timeoutId);
-        }
-        timeouts.clear();
-        writeLog(`[Scheduler] Cleared pending tasks for Account ${accIndex}`);
-    }
-}
 
 app.post('/api/toggle-auto', (req, res) => {
     const { accountIndex, enabled } = req.body;
@@ -127,12 +124,13 @@ app.post('/api/toggle-auto', (req, res) => {
         autoAccounts.add(accountIndex);
         saveState();
         writeLog(`[API] Auto-activate enabled for Account ${accountIndex}`);
-        preCalculateForAccount(accountIndex);
+        // Trigger a sync
+        claude.getStatus().then(data => scheduler.sync(data.accounts, Array.from(autoAccounts)));
     } else {
         autoAccounts.delete(accountIndex);
         saveState();
         writeLog(`[API] Auto-activate disabled for Account ${accountIndex}`);
-        clearTimeoutsForAccount(accountIndex);
+        scheduler.clear(accountIndex);
     }
     // NOTE: We do NOT re-parse cswap here to avoid double-scheduling.
     // The frontend will call /api/status after toggle which handles scheduling.
@@ -166,117 +164,12 @@ app.post('/api/execute-test', async (req, res) => {
     }
 });
 
-async function preCalculateForAccount(accIndex) {
-    try {
-        const data = await claude.getStatus();
-        const acc = data.accounts.find(a => a.index === accIndex);
-        if (!acc) return;
-
-        const quotas = [acc.quota5h, acc.quota7d];
-        const hasAvailableNow = quotas.some(q => !q.hasReset && q.percent < 100);
-
-        if (hasAvailableNow) {
-            writeLog(`[Pre-calc] Account ${accIndex}: quota available NOW — will trigger immediately`);
-            return;
-        }
-
-        // Note: The logic for calculating future reset times from text is still simplified here
-        // Ideally we'd parse the relative "in 5h" or absolute times more robustly.
-    } catch (err) {
-        // Silent error for background task
-    }
-}
-
-function parseAndScheduleCron(data) {
-    // If we received a string (old behavior), we should warn or handle, 
-    // but the new ClaudeInterface returns structured data.
-    if (typeof data === 'string') return; 
-
-    data.accounts.forEach(acc => {
-        if (!autoAccounts.has(acc.index)) return;
-
-        const quotas = [acc.quota5h, acc.quota7d];
-        let scheduled = false;
-
-        quotas.forEach(q => {
-            if (q.hasReset) {
-                // Extracts the time from strings like "resets 15:00 in 2h"
-                const timeMatch = q.text.match(/resets\s+(.*?)\s+in/);
-                if (timeMatch) {
-                    scheduleTask(acc.index, timeMatch[1].trim());
-                    scheduled = true;
-                }
-            }
-        });
-
-        if (!scheduled && acc.quota7d.percent < 100) {
-            writeLog(`[Scheduler] Account ${acc.index}: quota available now, scheduling immediate activation`);
-            scheduleTask(acc.index, '__immediate__');
-        }
-    });
-}
-
-/**
- * Helper to switch to an account, run the test prompt, and switch back.
- */
-function scheduleTask(accIndex, timeStr) {
-    if (!activeTimeouts.has(accIndex)) {
-        activeTimeouts.set(accIndex, new Map());
-    }
-    const accTimeouts = activeTimeouts.get(accIndex);
-
-    if (accTimeouts.has(timeStr)) return;
-
-    let delay;
-    if (timeStr === '__immediate__') {
-        delay = 2000;
-        writeLog(`[Scheduler] Account ${accIndex}: immediate activation in 2s`);
-    } else {
-        let targetDate;
-        if (timeStr.includes(':') && timeStr.length <= 5) {
-            const [hh, mm] = timeStr.split(':').map(Number);
-            targetDate = new Date();
-            targetDate.setHours(hh, mm, 0, 0);
-            if (targetDate.getTime() < Date.now()) {
-                targetDate.setDate(targetDate.getDate() + 1);
-            }
-        } else {
-            const year = new Date().getFullYear();
-            targetDate = new Date(`${timeStr} ${year}`);
-            if (targetDate.getTime() < Date.now()) {
-                targetDate.setFullYear(year + 1);
-            }
-        }
-        delay = targetDate.getTime() - Date.now() + 60000 + Math.floor(Math.random() * 60000);
-        if (!(delay > 0 && delay < 2147483647)) return;
-        const executeDate = new Date(Date.now() + delay);
-        writeLog(`[Scheduler] Account ${accIndex} scheduled for auto-activation at ${executeDate.toLocaleString()} (in ~${Math.round(delay/60000)}m)`);
-    }
-
-    const timeoutId = setTimeout(async () => {
-        writeLog(`[Scheduler] Timeout fired for Account ${accIndex}, enabled=${autoAccounts.has(accIndex)}`);
-        if (!autoAccounts.has(accIndex)) {
-            if (activeTimeouts.has(accIndex)) activeTimeouts.get(accIndex).delete(timeStr);
-            return;
-        }
-
-        try {
-            await claude.runTestPrompt(accIndex);
-        } catch (err) {
-            // Error already logged by ClaudeInterface
-        } finally {
-            if (activeTimeouts.has(accIndex)) activeTimeouts.get(accIndex).delete(timeStr);
-        }
-    }, delay);
-
-    accTimeouts.set(timeStr, timeoutId);
-}
 
 setInterval(async () => {
     if (autoAccounts.size > 0) {
         try {
             const data = await claude.getStatus();
-            parseAndScheduleCron(data);
+            scheduler.sync(data.accounts, Array.from(autoAccounts));
         } catch (err) {}
     }
 }, 5 * 60 * 1000);
@@ -290,7 +183,7 @@ app.listen(PORT, async () => {
         console.log(`[State] Restoring schedules for accounts: [${Array.from(autoAccounts).join(', ')}]`);
         try {
             const data = await claude.getStatus();
-            parseAndScheduleCron(data);
+            scheduler.sync(data.accounts, Array.from(autoAccounts));
         } catch (err) {}
     }
 });
