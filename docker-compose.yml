@@ -1,0 +1,18 @@
+services:
+  claude-monitor:
+    build: .
+    container_name: claude-monitor
+    ports:
+      - "3005:3005"
+    volumes:
+      # Preserve account sessions from the host
+      - ${HOME}/.claude:/home/node/.claude
+      - ${HOME}/.claude.json:/home/node/.claude.json
+      - ${HOME}/.claude-swap-backup:/home/node/.claude-swap-backup
+      # Persistence for the monitor state and logs
+      - ./state.json:/home/node/app/state.json
+      - ./audit.log:/home/node/app/audit.log
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - PORT=3005
