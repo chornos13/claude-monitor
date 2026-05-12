@@ -40,6 +40,33 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
 
+    function formatQuotaResetText(quota) {
+        if (!quota.resetTimeUTC || !quota.hasReset) return quota.text;
+        const MONTHS = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+        const now = new Date();
+        let resetUTC;
+        const withDate = quota.resetTimeUTC.match(/^(\w{3})\s+(\d+)\s+(\d{1,2}):(\d{2})$/);
+        if (withDate) {
+            const [, mon, day, h, m] = withDate;
+            let year = now.getUTCFullYear();
+            resetUTC = new Date(Date.UTC(year, MONTHS[mon], parseInt(day), parseInt(h), parseInt(m)));
+            if (resetUTC < now) resetUTC.setUTCFullYear(year + 1);
+        } else {
+            const [h, m] = quota.resetTimeUTC.split(':').map(Number);
+            resetUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), h, m));
+            if (resetUTC < now) resetUTC.setUTCDate(resetUTC.getUTCDate() + 1);
+        }
+        const localTime = resetUTC.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+        const diffMs = resetUTC - now;
+        const diffD = Math.floor(diffMs / 86400000);
+        const diffH = Math.floor((diffMs % 86400000) / 3600000);
+        const diffM = Math.floor((diffMs % 3600000) / 60000);
+        const relative = diffD > 0 ? `${diffD}d ${diffH}h` : diffH > 0 ? `${diffH}h ${diffM}m` : `${diffM}m`;
+        const localDate = resetUTC.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        const prefix = withDate ? `${localDate} ` : '';
+        return `resets ${prefix}${localTime} in ${relative}`;
+    }
+
     function renderNativeUI(data, container, autoAccounts) {
         let html = '';
 
@@ -73,7 +100,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     <span>5h Quota</span>
                                     <span>
                                         <strong style="color: var(--text-primary); margin-right: 4px;">${acc.quota5h.percent}%</strong>
-                                        <span class="quota-reset">${acc.quota5h.text}</span>
+                                        <span class="quota-reset">${formatQuotaResetText(acc.quota5h)}</span>
                                     </span>
                                 </div>
                                 <div class="progress-bar">
@@ -85,7 +112,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     <span>7d Quota</span>
                                     <span>
                                         <strong style="color: var(--text-primary); margin-right: 4px;">${acc.quota7d.percent}%</strong>
-                                        <span class="quota-reset">${acc.quota7d.text}</span>
+                                        <span class="quota-reset">${formatQuotaResetText(acc.quota7d)}</span>
                                     </span>
                                 </div>
                                 <div class="progress-bar">

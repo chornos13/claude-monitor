@@ -132,11 +132,15 @@ class ClaudeInterface {
                     currentAccount.quota5h.percent = pctMatch ? parseInt(pctMatch[1]) : 0;
                     currentAccount.quota5h.text = line.replace(/.*5h:\s*\d+%\s*/, '').trim();
                     currentAccount.quota5h.hasReset = line.includes('resets');
+                    const time5h = currentAccount.quota5h.text.match(/resets\s+(\d{1,2}:\d{2})/);
+                    currentAccount.quota5h.resetTimeUTC = time5h ? time5h[1] : null;
                 } else if (currentAccount && (line.includes('└ 7d:') || line.includes('7d:'))) {
                     const pctMatch = line.match(/(\d+)%/);
                     currentAccount.quota7d.percent = pctMatch ? parseInt(pctMatch[1]) : 0;
                     currentAccount.quota7d.text = line.replace(/.*7d:\s*\d+%\s*/, '').trim();
                     currentAccount.quota7d.hasReset = line.includes('resets');
+                    const time7d = currentAccount.quota7d.text.match(/resets\s+((?:\w{3}\s+\d+\s+)?\d{1,2}:\d{2})/);
+                    currentAccount.quota7d.resetTimeUTC = time7d ? time7d[1] : null;
                 }
             } else if (currentSection === 'instances') {
                 const instMatch = line.match(/^\s*●\s*(.+?)\s+~?\/([^\s]+)\s+\((.+)\)/);
