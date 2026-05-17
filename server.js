@@ -8,8 +8,8 @@ const app = express();
 const PORT = process.env.PORT || 3005;
 
 const claude = new ClaudeInterface({ log: writeLog });
-const scheduler = new Scheduler({ 
-    logger: writeLog, 
+const scheduler = new Scheduler({
+    logger: { log: writeLog },
     onExecute: async (index) => {
         await claude.runTestPrompt(index);
         broadcastEvent('status-refresh', {});
