@@ -289,6 +289,10 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         });
 
+        evtSource.addEventListener('logs-cleared', () => {
+            auditOutput.textContent = 'No logs yet...';
+        });
+
         // Server triggered status refresh (after cron execution)
         evtSource.addEventListener('status-refresh', () => {
             fetchStatus();
@@ -311,4 +315,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     document.getElementById('refresh-logs-btn').addEventListener('click', fetchLogs);
+
+    document.getElementById('clear-logs-btn').addEventListener('click', async () => {
+        await fetch('/api/logs', { method: 'DELETE' });
+        auditOutput.textContent = 'No logs yet...';
+    });
 });

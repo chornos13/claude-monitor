@@ -116,6 +116,15 @@ app.get('/api/logs', (req, res) => {
 });
 
 
+app.delete('/api/logs', (req, res) => {
+    const logPath = path.join(__dirname, 'audit.log');
+    fs.writeFile(logPath, '', (err) => {
+        if (err) return res.status(500).json({ error: 'Failed to clear logs' });
+        broadcastEvent('logs-cleared', {});
+        res.json({ success: true });
+    });
+});
+
 app.post('/api/toggle-auto', (req, res) => {
     const { accountIndex, enabled } = req.body;
     if (accountIndex === undefined || accountIndex === null) return res.status(400).json({ error: "Missing accountIndex" });

@@ -3,7 +3,8 @@ FROM node:20-slim
 RUN apt-get update && apt-get install -y \
     curl \
     git \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /home/woi && chown node:node /home/woi
 
 WORKDIR /home/node/app
 RUN chown node:node /home/node/app
