@@ -5,10 +5,10 @@ services:
     ports:
       - "3005:3005"
     volumes:
-      # Preserve account sessions from the host
-      - ${HOME}/.claude:/home/woi/.claude
-      - ${HOME}/.claude.json:/home/woi/.claude.json
-      - ${HOME}/.local:/home/woi/.local
+      # Mount the host home so cswap's atomic file replacement on
+      # ~/.claude.json stays visible to the container (single-file bind
+      # mounts pin an inode and break on rename).
+      - ${HOME}:/home/woi
       # Persistence for the monitor state and logs
       - ./state.json:/home/node/app/state.json
       - ./audit.log:/home/node/app/audit.log
