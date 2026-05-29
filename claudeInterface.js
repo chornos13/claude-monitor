@@ -12,6 +12,22 @@ const execAsync = promisify(exec);
 class ClaudeInterface {
     constructor(logger) {
         this.logger = logger || { log: console.log };
+        // Serializes all operations that mutate the global active account
+        // (cswap --switch-to writes the single ~/.claude.json). Without this,
+        // concurrent runTestPrompt calls interleave at their await points and
+        // switch the active account out from under each other.
+        this._lock = Promise.resolve();
+    }
+
+    /**
+     * Internal: Runs fn with exclusive access to the active-account state.
+     * Tasks queue on a promise chain; a rejection in one task does not break
+     * the chain for the next.
+     */
+    _withLock(fn) {
+        const result = this._lock.then(() => fn());
+        this._lock = result.then(() => {}, () => {});
+        return result;
     }
 
     /**
@@ -29,9 +45,18 @@ class ClaudeInterface {
     }
 
     /**
-     * Switches to the target account.
+     * Switches to the target account. Serialized against all other
+     * active-account mutations.
      */
     async switchToAccount(index) {
+        return this._withLock(() => this._switchToAccountUnlocked(index));
+    }
+
+    /**
+     * Internal: performs the switch without acquiring the lock. Callers that
+     * already hold the lock (e.g. runTestPrompt) use this to avoid deadlock.
+     */
+    async _switchToAccountUnlocked(index) {
         try {
             this.logger.log(`[ClaudeInterface] Switching to account ${index}...`);
             await execAsync(`cswap --switch-to ${index}`);
@@ -51,13 +76,19 @@ class ClaudeInterface {
      * 4. Restoring the original account.
      */
     async runTestPrompt(targetIndex) {
+        // The whole switch -> run -> restore sequence must own the active
+        // account exclusively, so it runs under the lock as a single unit.
+        return this._withLock(() => this._runTestPromptUnlocked(targetIndex));
+    }
+
+    async _runTestPromptUnlocked(targetIndex) {
         this.logger.log(`[ClaudeInterface] Starting test execution for account ${targetIndex}...`);
-        
+
         // 1. Check list to find currently active account
         const status = await this.getStatus();
         const activeAccount = status.accounts.find(a => a.isActive);
         const previousActiveIndex = activeAccount ? activeAccount.index : null;
-        
+
         this.logger.log(`[ClaudeInterface] Active account before: ${previousActiveIndex ?? 'unknown'}`);
 
         const needsSwitch = previousActiveIndex !== targetIndex;
@@ -65,7 +96,7 @@ class ClaudeInterface {
         try {
             // 2. Switch if not the same index
             if (needsSwitch) {
-                await this.switchToAccount(targetIndex);
+                await this._switchToAccountUnlocked(targetIndex);
             }
 
             // 3. Run claude
@@ -87,7 +118,7 @@ class ClaudeInterface {
             if (needsSwitch && previousActiveIndex !== null) {
                 this.logger.log(`[ClaudeInterface] Restoring active account to ${previousActiveIndex}...`);
                 try {
-                    await this.switchToAccount(previousActiveIndex);
+                    await this._switchToAccountUnlocked(previousActiveIndex);
                     this.logger.log(`[ClaudeInterface] Restored account ${previousActiveIndex}.`);
                 } catch (restoreErr) {
                     this.logger.log(`[ClaudeInterface] Restore Error: ${restoreErr.message}`);

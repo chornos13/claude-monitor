@@ -82,16 +82,19 @@ class Scheduler {
 
         const timeoutId = setTimeout(async () => {
             this.logger.log(`[Scheduler] Timeout fired for Account ${accIndex} (${timeStr})`);
-            
-            // Cleanup timeout tracking before execution
-            if (this.activeTimeouts.has(accIndex)) {
-                this.activeTimeouts.get(accIndex).delete(timeStr);
-            }
 
             try {
                 await this.onExecute(accIndex);
             } catch (err) {
                 this.logger.log(`[Scheduler] Task execution failed for Account ${accIndex}: ${err.message}`);
+            } finally {
+                // Cleanup tracking only AFTER execution. Deleting it earlier
+                // lets a concurrent sync() (status poll / 5-min interval) see
+                // the slot free and re-schedule the same task mid-flight,
+                // double-firing it.
+                if (this.activeTimeouts.has(accIndex)) {
+                    this.activeTimeouts.get(accIndex).delete(timeStr);
+                }
             }
         }, delay);
 
