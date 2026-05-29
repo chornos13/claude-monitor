@@ -100,7 +100,7 @@ class ClaudeInterface {
             }
 
             // 3. Run claude
-            const claudeCmd = `claude -p "1+1=" --model claude-haiku-4-5-20251001 < /dev/null`;
+            const claudeCmd = `claude -p "1+1=" --model claude-sonnet-4-6 < /dev/null`;
             this.logger.log(`[ClaudeInterface] Executing claude command for account ${targetIndex}...`);
             const { stdout, stderr } = await execAsync(claudeCmd);
             
