@@ -314,6 +314,39 @@ document.addEventListener('DOMContentLoaded', () => {
         fetchLogs();
     });
 
+    // Keyboard shortcuts: "R" refreshes status, "1"-"9" switch to the matching
+    // account card, "T" runs the Test prompt on the active account.
+    document.addEventListener('keydown', (e) => {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        const tag = e.target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
+
+        if (e.key === 'r' || e.key === 'R') {
+            e.preventDefault();
+            fetchStatus();
+            fetchLogs();
+            return;
+        }
+
+        if (e.key === 't' || e.key === 'T') {
+            const btn = document.querySelector('.active-account .execute-btn');
+            if (btn && !btn.disabled) {
+                e.preventDefault();
+                btn.click();
+            }
+            return;
+        }
+
+        if (e.key >= '1' && e.key <= '9') {
+            const card = document.querySelectorAll('.account-card')[parseInt(e.key) - 1];
+            const btn = card && card.querySelector('.switch-btn');
+            if (btn && !btn.disabled) {
+                e.preventDefault();
+                btn.click();
+            }
+        }
+    });
+
     document.getElementById('refresh-logs-btn').addEventListener('click', fetchLogs);
 
     document.getElementById('clear-logs-btn').addEventListener('click', async () => {
