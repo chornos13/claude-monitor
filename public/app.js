@@ -79,55 +79,49 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
                 <div class="cards-grid">
             `;
-            data.accounts.forEach(acc => {
-                const getStatusColor = (pct) => pct >= 80 ? 'danger' : pct >= 50 ? 'warning' : 'safe';
+            const getStatusColor = (pct) => pct >= 80 ? 'danger' : pct >= 50 ? 'warning' : 'safe';
+            const quotaRow = (label, q) => `
+                <div class="quota-item">
+                    <div class="quota-row">
+                        <span class="quota-label">${label}</span>
+                        <div class="progress-bar">
+                            <div class="progress-fill ${getStatusColor(q.percent)}" style="width: ${q.percent}%"></div>
+                        </div>
+                        <span class="quota-pct">${q.percent}%</span>
+                    </div>
+                    <div class="quota-reset">${formatQuotaResetText(q)}</div>
+                </div>
+            `;
+            data.accounts.forEach((acc, i) => {
                 const isAuto = autoAccounts.includes(acc.index);
+                const keyNum = i + 1;
                 html += `
                     <div class="account-card ${acc.isActive ? 'active-account' : ''}">
-                        <div class="account-header">
-                            <span class="account-email">${acc.email}</span>
-                            <div style="display: flex; gap: 8px; align-items: center;">
-                                <button class="btn execute-btn" data-account-index="${acc.index}" title="Execute Test Prompt">
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-                                    <span>Test</span>
-                                </button>
-                                ${acc.isActive ? '<span class="badge-active">Active</span>' : `<button class="btn switch-btn" data-account-index="${acc.index}">Switch</button>`}
-                            </div>
+                        <div class="card-head">
+                            ${keyNum <= 9 ? `<span class="account-key" title="Press ${keyNum} to switch to this account">${keyNum}</span>` : ''}
+                            <span class="account-email" title="${acc.email}">${acc.email}</span>
+                            ${acc.isActive ? '<span class="status-pill"><span class="status-dot"></span>Active</span>' : ''}
                         </div>
                         <div class="quota-section">
-                            <div class="quota-item">
-                                <div class="quota-header">
-                                    <span>5h Quota</span>
-                                    <span>
-                                        <strong style="color: var(--text-primary); margin-right: 4px;">${acc.quota5h.percent}%</strong>
-                                        <span class="quota-reset">${formatQuotaResetText(acc.quota5h)}</span>
-                                    </span>
-                                </div>
-                                <div class="progress-bar">
-                                    <div class="progress-fill ${getStatusColor(acc.quota5h.percent)}" style="width: ${acc.quota5h.percent}%"></div>
-                                </div>
-                            </div>
-                            <div class="quota-item">
-                                <div class="quota-header">
-                                    <span>7d Quota</span>
-                                    <span>
-                                        <strong style="color: var(--text-primary); margin-right: 4px;">${acc.quota7d.percent}%</strong>
-                                        <span class="quota-reset">${formatQuotaResetText(acc.quota7d)}</span>
-                                    </span>
-                                </div>
-                                <div class="progress-bar">
-                                    <div class="progress-fill ${getStatusColor(acc.quota7d.percent)}" style="width: ${acc.quota7d.percent}%"></div>
-                                </div>
-                            </div>
+                            ${quotaRow('5h', acc.quota5h)}
+                            ${quotaRow('7d', acc.quota7d)}
                         </div>
-                        <div class="toggle-container">
-                            <label class="toggle-label">
-                                Auto-Activate on Reset
+                        <div class="card-foot">
+                            <label class="auto-toggle" title="Auto-activate this account when its quota resets">
+                                <span class="switch">
+                                    <input type="checkbox" class="auto-toggle-btn" data-account-index="${acc.index}" ${isAuto ? 'checked' : ''}>
+                                    <span class="slider"></span>
+                                </span>
+                                <span>Auto</span>
                             </label>
-                            <label class="switch">
-                                <input type="checkbox" class="auto-toggle-btn" data-account-index="${acc.index}" ${isAuto ? 'checked' : ''}>
-                                <span class="slider"></span>
-                            </label>
+                            <div class="account-actions">
+                                <button class="btn execute-btn" data-account-index="${acc.index}" title="${acc.isActive ? 'Press T to test the active account' : 'Run the test prompt'}">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                                    <span>Test</span>
+                                    ${acc.isActive ? '<kbd class="key-hint">T</kbd>' : ''}
+                                </button>
+                                ${acc.isActive ? '' : `<button class="btn switch-btn" data-account-index="${acc.index}" title="Press ${keyNum} to switch to this account">Switch</button>`}
+                            </div>
                         </div>
                     </div>
                 `;
