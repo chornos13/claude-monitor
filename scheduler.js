@@ -49,14 +49,16 @@ class Scheduler {
      * Clears all pending tasks for a specific account.
      */
     clear(accIndex) {
-        if (this.activeTimeouts.has(accIndex)) {
-            const timeouts = this.activeTimeouts.get(accIndex);
-            for (const [timeStr, timeoutId] of timeouts.entries()) {
-                clearTimeout(timeoutId);
-            }
-            timeouts.clear();
-            this.logger.log(`[Scheduler] Cleared all pending tasks for Account ${accIndex}`);
+        const timeouts = this.activeTimeouts.get(accIndex);
+        // No-op (and no log) unless there are actually pending timers. sync()
+        // calls clear() for every non-auto account on each status refresh; an
+        // emptied-but-present Map key would otherwise re-log on every refresh.
+        if (!timeouts || timeouts.size === 0) return;
+        for (const timeoutId of timeouts.values()) {
+            clearTimeout(timeoutId);
         }
+        this.activeTimeouts.delete(accIndex);
+        this.logger.log(`[Scheduler] Cleared all pending tasks for Account ${accIndex}`);
     }
 
     /**

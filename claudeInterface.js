@@ -1,6 +1,13 @@
 const { exec } = require('child_process');
 const { promisify } = require('util');
+const fs = require('fs/promises');
+const os = require('os');
+const path = require('path');
 const execAsync = promisify(exec);
+
+// The cswap account store ($XDG_DATA_HOME/claude-swap, default ~/.local/share).
+const STORE_PARENT = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+const STORE_DIR = path.join(STORE_PARENT, 'claude-swap');
 
 /**
  * ClaudeInterface Module
@@ -12,10 +19,9 @@ const execAsync = promisify(exec);
 class ClaudeInterface {
     constructor(logger) {
         this.logger = logger || { log: console.log };
-        // Serializes all operations that mutate the global active account
-        // (cswap --switch-to writes the single ~/.claude.json). Without this,
-        // concurrent runTestPrompt calls interleave at their await points and
-        // switch the active account out from under each other.
+        // Serializes manual switchToAccount calls, which mutate the global
+        // active account (cswap --switch-to writes the single ~/.claude.json).
+        // Tests don't use this — they run sandboxed (see runTestPrompt).
         this._lock = Promise.resolve();
     }
 
@@ -53,8 +59,7 @@ class ClaudeInterface {
     }
 
     /**
-     * Internal: performs the switch without acquiring the lock. Callers that
-     * already hold the lock (e.g. runTestPrompt) use this to avoid deadlock.
+     * Internal: performs the switch without acquiring the lock.
      */
     async _switchToAccountUnlocked(index) {
         try {
@@ -68,63 +73,51 @@ class ClaudeInterface {
     }
 
     /**
-     * Deep Function: Runs a test prompt on the target account.
-     * It automatically handles:
-     * 1. Identifying the active account.
-     * 2. Switching to the target account (if necessary).
-     * 3. Executing the prompt.
-     * 4. Restoring the original account.
+     * Deep Function: Runs a test prompt on the target account in a fully
+     * isolated sandbox, so it NEVER touches the host's live credentials.
+     *
+     * The leak it prevents: `cswap --switch-to` rewrites the shared
+     * ~/.claude.json + ~/.claude/.credentials.json (and the store's
+     * activeAccountNumber). With the host home bind-mounted, that hijacks the
+     * account under any live `claude` terminal/extension session.
+     *
+     * Isolation: cswap and claude both honour CLAUDE_CONFIG_DIR for the
+     * config/credentials they write/read, and XDG_DATA_HOME for the account
+     * store. We point both at a throwaway temp dir holding a private copy of
+     * the store. The switch and run happen entirely inside it; the host's
+     * files and the shared store are untouched. No switch/restore, no lock —
+     * each test is self-contained, so concurrent tests can't collide.
      */
     async runTestPrompt(targetIndex) {
-        // The whole switch -> run -> restore sequence must own the active
-        // account exclusively, so it runs under the lock as a single unit.
-        return this._withLock(() => this._runTestPromptUnlocked(targetIndex));
-    }
-
-    async _runTestPromptUnlocked(targetIndex) {
-        this.logger.log(`[ClaudeInterface] Starting test execution for account ${targetIndex}...`);
-
-        // 1. Check list to find currently active account
-        const status = await this.getStatus();
-        const activeAccount = status.accounts.find(a => a.isActive);
-        const previousActiveIndex = activeAccount ? activeAccount.index : null;
-
-        this.logger.log(`[ClaudeInterface] Active account before: ${previousActiveIndex ?? 'unknown'}`);
-
-        const needsSwitch = previousActiveIndex !== targetIndex;
-
+        this.logger.log(`[ClaudeInterface] Starting isolated test for account ${targetIndex}...`);
+        const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'cswap-test-'));
+        const env = {
+            ...process.env,
+            CLAUDE_CONFIG_DIR: path.join(sandbox, 'config'),
+            XDG_DATA_HOME: path.join(sandbox, 'data'),
+        };
         try {
-            // 2. Switch if not the same index
-            if (needsSwitch) {
-                await this._switchToAccountUnlocked(targetIndex);
-            }
+            await fs.mkdir(env.CLAUDE_CONFIG_DIR, { recursive: true });
+            // Private copy of the account store so the switch's bookkeeping
+            // (activeAccountNumber) stays inside the sandbox too.
+            await fs.cp(STORE_DIR, path.join(env.XDG_DATA_HOME, 'claude-swap'), { recursive: true });
 
-            // 3. Run claude
+            await execAsync(`cswap --switch-to ${targetIndex}`, { env });
+
             const claudeCmd = `claude -p "1+1=" --model claude-sonnet-4-6 < /dev/null`;
             this.logger.log(`[ClaudeInterface] Executing claude command for account ${targetIndex}...`);
-            const { stdout, stderr } = await execAsync(claudeCmd);
-            
+            const { stdout, stderr } = await execAsync(claudeCmd, { env });
+
             const result = stdout.trim() || '(no output)';
             this.logger.log(`[ClaudeInterface] Claude Output for account ${targetIndex}: ${result}`);
             if (stderr) this.logger.log(`[ClaudeInterface] Claude Stderr: ${stderr.trim()}`);
 
             return { success: true, output: result };
-
         } catch (error) {
             this.logger.log(`[ClaudeInterface] Execution Error for account ${targetIndex}: ${error.message}`);
             throw error;
         } finally {
-            // 4. Restore active account if we displaced a different one
-            if (needsSwitch && previousActiveIndex !== null) {
-                this.logger.log(`[ClaudeInterface] Restoring active account to ${previousActiveIndex}...`);
-                try {
-                    await this._switchToAccountUnlocked(previousActiveIndex);
-                    this.logger.log(`[ClaudeInterface] Restored account ${previousActiveIndex}.`);
-                } catch (restoreErr) {
-                    this.logger.log(`[ClaudeInterface] Restore Error: ${restoreErr.message}`);
-                    // We don't throw here to avoid masking the primary result/error
-                }
-            }
+            await fs.rm(sandbox, { recursive: true, force: true }).catch(() => {});
         }
     }
 
