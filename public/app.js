@@ -3,6 +3,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const outputEl = document.getElementById('native-output');
     const errorEl = document.getElementById('error');
 
+    // Accounts with a test currently executing (manual or auto). Server-driven
+    // via 'test-status' SSE events; survives re-renders so the pill persists.
+    const testingAccounts = new Set();
+
     // Function to fetch status from backend
     const fetchStatus = async () => {
         // UI State: Loading
@@ -96,11 +100,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 const isAuto = autoAccounts.includes(acc.index);
                 const keyNum = i + 1;
                 html += `
-                    <div class="account-card ${acc.isActive ? 'active-account' : ''}">
+                    <div class="account-card ${acc.isActive ? 'active-account' : ''}" data-account-index="${acc.index}">
                         <div class="card-head">
                             ${keyNum <= 9 ? `<span class="account-key" title="Press ${keyNum} to switch to this account">${keyNum}</span>` : ''}
                             <span class="account-email" title="${acc.email}">${acc.email}</span>
                             ${acc.isActive ? '<span class="status-pill"><span class="status-dot"></span>Active</span>' : ''}
+                            ${testingAccounts.has(acc.index) ? '<span class="status-pill testing-pill"><span class="status-dot"></span>Testing…</span>' : ''}
                         </div>
                         <div class="quota-section">
                             ${quotaRow('5h', acc.quota5h)}
@@ -290,6 +295,24 @@ document.addEventListener('DOMContentLoaded', () => {
         // Server triggered status refresh (after cron execution)
         evtSource.addEventListener('status-refresh', () => {
             fetchStatus();
+        });
+
+        // A test started/ended (manual or auto). Track it and toggle the pill
+        // on the matching card live, without waiting for the next status fetch.
+        evtSource.addEventListener('test-status', (e) => {
+            const { accountIndex, running } = JSON.parse(e.data);
+            if (running) testingAccounts.add(accountIndex);
+            else testingAccounts.delete(accountIndex);
+
+            const card = document.querySelector(`.account-card[data-account-index="${accountIndex}"]`);
+            if (!card) return;
+            const head = card.querySelector('.card-head');
+            const existing = head.querySelector('.testing-pill');
+            if (running && !existing) {
+                head.insertAdjacentHTML('beforeend', '<span class="status-pill testing-pill"><span class="status-dot"></span>Testing…</span>');
+            } else if (!running && existing) {
+                existing.remove();
+            }
         });
 
         evtSource.onerror = () => {

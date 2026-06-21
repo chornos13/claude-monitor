@@ -481,6 +481,18 @@ pre {
     box-shadow: 0 0 6px #4ade80;
 }
 
+/* Test-in-progress pill (amber, pulsing) — distinct from the green Active pill */
+.testing-pill {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+}
+
+.testing-pill .status-dot {
+    background: #fbbf24;
+    box-shadow: 0 0 6px #fbbf24;
+    animation: pulse 1s ease-in-out infinite;
+}
+
 /* Quota metrics */
 .quota-section {
     display: flex;

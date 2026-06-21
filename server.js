@@ -11,8 +11,7 @@ const claude = new ClaudeInterface({ log: writeLog });
 const scheduler = new Scheduler({
     logger: { log: writeLog },
     onExecute: async (index) => {
-        await claude.runTestPrompt(index);
-        broadcastEvent('status-refresh', {});
+        await runTest(index);
     }
 });
 
@@ -55,6 +54,19 @@ function broadcastEvent(event, data) {
         client.write(payload);
     }
 }
+// Runs a test and brackets it with test-status events so the UI can show a
+// "Testing…" indicator for both manual and auto-activated runs (which are
+// sandboxed and no longer move the host's active account).
+async function runTest(index) {
+    broadcastEvent('test-status', { accountIndex: index, running: true });
+    try {
+        return await claude.runTestPrompt(index);
+    } finally {
+        broadcastEvent('test-status', { accountIndex: index, running: false });
+        broadcastEvent('status-refresh', {});
+    }
+}
+
 function writeLog(msg) {
     const timestamp = new Date().toISOString();
     const logStr = `[${timestamp}] ${msg}`;
@@ -165,8 +177,7 @@ app.post('/api/execute-test', async (req, res) => {
     if (accountIndex === undefined || accountIndex === null) return res.status(400).json({ error: "Missing accountIndex" });
 
     try {
-        const result = await claude.runTestPrompt(accountIndex);
-        broadcastEvent('status-refresh', {});
+        const result = await runTest(accountIndex);
         res.json(result);
     } catch (error) {
         res.status(500).json({ error: error.message });
