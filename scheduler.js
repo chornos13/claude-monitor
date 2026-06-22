@@ -24,24 +24,18 @@ class Scheduler {
                 return;
             }
 
-            const quotas = [acc.quota5h, acc.quota7d];
-            let scheduled = false;
-
-            quotas.forEach(q => {
+            // Auto-activate runs a keep-alive test WHEN a quota window resets.
+            // An account with no pending reset needs no action — scheduling
+            // anything there just busy-loops (see git history).
+            [acc.quota5h, acc.quota7d].forEach(q => {
                 if (q.hasReset) {
                     // Extracts the time from strings like "resets 15:00 in 2h"
                     const timeMatch = q.text.match(/resets\s+(.*?)\s+in/);
                     if (timeMatch) {
                         this._scheduleTask(acc.index, timeMatch[1].trim());
-                        scheduled = true;
                     }
                 }
             });
-
-            // If no future resets are found but account is not exhausted, schedule immediate
-            if (!scheduled && acc.quota7d.percent < 100) {
-                this._scheduleTask(acc.index, '__immediate__');
-            }
         });
     }
 
@@ -76,11 +70,7 @@ class Scheduler {
         if (delay === null) return;
 
         const executeDate = new Date(Date.now() + delay);
-        const logMsg = timeStr === '__immediate__' 
-            ? `immediate activation in 2s` 
-            : `scheduled for auto-activation at ${executeDate.toLocaleString()} (in ~${Math.round(delay/60000)}m)`;
-        
-        this.logger.log(`[Scheduler] Account ${accIndex} ${logMsg}`);
+        this.logger.log(`[Scheduler] Account ${accIndex} scheduled for auto-activation at ${executeDate.toLocaleString()} (in ~${Math.round(delay/60000)}m)`);
 
         const timeoutId = setTimeout(async () => {
             this.logger.log(`[Scheduler] Timeout fired for Account ${accIndex} (${timeStr})`);
@@ -90,10 +80,10 @@ class Scheduler {
             } catch (err) {
                 this.logger.log(`[Scheduler] Task execution failed for Account ${accIndex}: ${err.message}`);
             } finally {
-                // Cleanup tracking only AFTER execution. Deleting it earlier
-                // lets a concurrent sync() (status poll / 5-min interval) see
-                // the slot free and re-schedule the same task mid-flight,
-                // double-firing it.
+                // Free the slot AFTER execution so the next sync() can
+                // re-schedule the following window's reset. Deleting earlier
+                // would let a concurrent sync() re-schedule mid-flight and
+                // double-fire.
                 if (this.activeTimeouts.has(accIndex)) {
                     this.activeTimeouts.get(accIndex).delete(timeStr);
                 }
@@ -107,8 +97,6 @@ class Scheduler {
      * Internal: Calculates delay in ms with hardcoded jitter.
      */
     _calculateDelay(timeStr) {
-        if (timeStr === '__immediate__') return 2000;
-
         let targetDate;
         if (timeStr.includes(':') && timeStr.length <= 5) {
             const [hh, mm] = timeStr.split(':').map(Number);
