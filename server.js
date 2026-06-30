@@ -55,8 +55,9 @@ function broadcastEvent(event, data) {
     }
 }
 // Runs a test and brackets it with test-status events so the UI can show a
-// "Testing…" indicator for both manual and auto-activated runs (which are
-// sandboxed and no longer move the host's active account).
+// "Testing…" indicator for both manual and auto-activated runs. A run briefly
+// switches the host's active account to the target, then restores it (see
+// ClaudeInterface.runTestPrompt) — serialized by the interface's lock.
 async function runTest(index) {
     broadcastEvent('test-status', { accountIndex: index, running: true });
     try {

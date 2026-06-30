@@ -5,23 +5,24 @@ const os = require('os');
 const path = require('path');
 const execAsync = promisify(exec);
 
-// The cswap account store ($XDG_DATA_HOME/claude-swap, default ~/.local/share).
-const STORE_PARENT = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
-const STORE_DIR = path.join(STORE_PARENT, 'claude-swap');
-
 /**
  * ClaudeInterface Module
- * 
+ *
  * Deep module that encapsulates interaction with cswap and claude CLI tools.
  * It provides a high-leverage interface for listing accounts, switching,
  * and executing commands.
  */
 class ClaudeInterface {
-    constructor(logger) {
+    constructor(logger, options = {}) {
         this.logger = logger || { log: console.log };
-        // Serializes manual switchToAccount calls, which mutate the global
-        // active account (cswap --switch-to writes the single ~/.claude.json).
-        // Tests don't use this — they run sandboxed (see runTestPrompt).
+        // Injectable command runner (defaults to the real promisified exec).
+        // Tests pass a fake to assert the issued command sequence without
+        // touching cswap/claude. Seam: domain logic vs the external CLI.
+        this._exec = options.exec || execAsync;
+        // Serializes EVERY active-account mutation. cswap --switch-to rewrites
+        // the single shared ~/.claude.json + ~/.claude/.credentials.json, so
+        // manual switches AND the switch->run->restore of a test must own the
+        // active account exclusively or they clobber each other.
         this._lock = Promise.resolve();
     }
 
@@ -42,7 +43,7 @@ class ClaudeInterface {
      */
     async getStatus() {
         try {
-            const { stdout } = await execAsync('cswap --list');
+            const { stdout } = await this._exec('cswap --list');
             return this._parseStatus(stdout);
         } catch (error) {
             this.logger.log(`[ClaudeInterface] Failed to get status: ${error.message}`);
@@ -59,12 +60,13 @@ class ClaudeInterface {
     }
 
     /**
-     * Internal: performs the switch without acquiring the lock.
+     * Internal: performs the switch without acquiring the lock. Callers that
+     * already hold the lock (e.g. runTestPrompt) use this to avoid deadlock.
      */
     async _switchToAccountUnlocked(index) {
         try {
             this.logger.log(`[ClaudeInterface] Switching to account ${index}...`);
-            await execAsync(`cswap --switch-to ${index}`);
+            await this._exec(`cswap --switch-to ${index}`);
             this.logger.log(`[ClaudeInterface] Successfully switched to account ${index}.`);
         } catch (error) {
             this.logger.log(`[ClaudeInterface] Switch Error: ${error.message}`);
@@ -73,40 +75,73 @@ class ClaudeInterface {
     }
 
     /**
-     * Deep Function: Runs a test prompt on the target account in a fully
-     * isolated sandbox, so it NEVER touches the host's live credentials.
+     * Deep Function: Runs a test prompt on the target account WITHOUT ever
+     * moving the host's active account or losing a credential.
      *
-     * The leak it prevents: `cswap --switch-to` rewrites the shared
-     * ~/.claude.json + ~/.claude/.credentials.json (and the store's
-     * activeAccountNumber). With the host home bind-mounted, that hijacks the
-     * account under any live `claude` terminal/extension session.
+     * Two hazards this navigates, both rooted in one fact: a Claude OAuth
+     * refresh token is single-use. The test forces `claude` to refresh the
+     * (always-stale, since tests fire at quota-reset windows) access token,
+     * which ROTATES the refresh token server-side and kills the old one.
      *
-     * Isolation: cswap and claude both honour CLAUDE_CONFIG_DIR for the
-     * config/credentials they write/read, and XDG_DATA_HOME for the account
-     * store. We point both at a throwaway temp dir holding a private copy of
-     * the store. The switch and run happen entirely inside it; the host's
-     * files and the shared store are untouched. No switch/restore, no lock —
-     * each test is self-contained, so concurrent tests can't collide.
+     *   1. Lost token. A sandbox holding a *copy* of the creds captures the
+     *      rotated token, then deletes it with the sandbox — leaving the store
+     *      and host ~/.claude with a dead token. (Regression in 2628b74: the
+     *      active account went invalid on every auto-run.)
+     *   2. Hijack. Switching the host's active account in place points the
+     *      shared ~/.claude at the target, so a `claude` running in the
+     *      background re-reads it and starts spending the WRONG account.
+     *
+     * Resolution, by case:
+     *   - target is NOT active: isolate only CLAUDE_CONFIG_DIR to a throwaway
+     *     dir (cswap/claude honour it), but keep the REAL account store. The
+     *     switch writes creds into the sandbox, never host ~/.claude — no
+     *     hijack. The closing switch-away makes cswap save the target's rotated
+     *     token back into the real store — no lost token. Verified: cswap
+     *     honours CLAUDE_CONFIG_DIR and persists on switch-away.
+     *   - target IS active: run in place against host ~/.claude, no switch, no
+     *     sandbox. It is the same account, so the rotation just updates the
+     *     live token the host session already uses — no hijack, no loss.
+     *
+     * Serialized under the lock so the store's active pointer is never
+     * observed half-switched by a concurrent run.
      */
     async runTestPrompt(targetIndex) {
-        this.logger.log(`[ClaudeInterface] Starting isolated test for account ${targetIndex}...`);
-        const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'cswap-test-'));
-        const env = {
-            ...process.env,
-            CLAUDE_CONFIG_DIR: path.join(sandbox, 'config'),
-            XDG_DATA_HOME: path.join(sandbox, 'data'),
-        };
-        try {
-            await fs.mkdir(env.CLAUDE_CONFIG_DIR, { recursive: true });
-            // Private copy of the account store so the switch's bookkeeping
-            // (activeAccountNumber) stays inside the sandbox too.
-            await fs.cp(STORE_DIR, path.join(env.XDG_DATA_HOME, 'claude-swap'), { recursive: true });
+        return this._withLock(() => this._runTestPromptUnlocked(targetIndex));
+    }
 
-            await execAsync(`cswap --switch-to ${targetIndex}`, { env });
+    async _runTestPromptUnlocked(targetIndex) {
+        this.logger.log(`[ClaudeInterface] Starting test execution for account ${targetIndex}...`);
+
+        const status = await this.getStatus();
+        const activeAccount = status.accounts.find(a => a.isActive);
+        const previousActiveIndex = activeAccount ? activeAccount.index : null;
+        this.logger.log(`[ClaudeInterface] Active account before: ${previousActiveIndex ?? 'unknown'}`);
+
+        const isActiveTarget = previousActiveIndex === targetIndex;
+
+        // Active target runs in place (env unchanged). Non-active target runs
+        // against a sandbox config dir so the switch never touches host
+        // ~/.claude; the real store is left in place so the rotation persists.
+        let sandbox = null;
+        let env;
+        if (isActiveTarget) {
+            env = undefined; // inherit process env — operate on live ~/.claude
+        } else {
+            sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'cswap-test-'));
+            const configDir = path.join(sandbox, 'config');
+            await fs.mkdir(configDir, { recursive: true });
+            env = { ...process.env, CLAUDE_CONFIG_DIR: configDir };
+        }
+
+        try {
+            if (!isActiveTarget) {
+                this.logger.log(`[ClaudeInterface] Switching (sandboxed) to account ${targetIndex}...`);
+                await this._exec(`cswap --switch-to ${targetIndex}`, { env });
+            }
 
             const claudeCmd = `claude -p "1+1=" --model claude-sonnet-4-6 < /dev/null`;
             this.logger.log(`[ClaudeInterface] Executing claude command for account ${targetIndex}...`);
-            const { stdout, stderr } = await execAsync(claudeCmd, { env });
+            const { stdout, stderr } = await this._exec(claudeCmd, { env });
 
             const result = stdout.trim() || '(no output)';
             this.logger.log(`[ClaudeInterface] Claude Output for account ${targetIndex}: ${result}`);
@@ -117,7 +152,19 @@ class ClaudeInterface {
             this.logger.log(`[ClaudeInterface] Execution Error for account ${targetIndex}: ${error.message}`);
             throw error;
         } finally {
-            await fs.rm(sandbox, { recursive: true, force: true }).catch(() => {});
+            // Switch-away inside the sandbox: this is what makes cswap save the
+            // target's freshly-rotated token back into the real store. The host
+            // pointer was never moved, so nothing on the host needs restoring.
+            if (!isActiveTarget && previousActiveIndex !== null) {
+                this.logger.log(`[ClaudeInterface] Persisting rotated creds (sandbox switch-away to ${previousActiveIndex})...`);
+                try {
+                    await this._exec(`cswap --switch-to ${previousActiveIndex}`, { env });
+                } catch (restoreErr) {
+                    // Don't mask the primary result/error.
+                    this.logger.log(`[ClaudeInterface] Persist Error: ${restoreErr.message}`);
+                }
+            }
+            if (sandbox) await fs.rm(sandbox, { recursive: true, force: true }).catch(() => {});
         }
     }
 
