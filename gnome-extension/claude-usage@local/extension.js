@@ -16,7 +16,7 @@ const MONITOR_URL = 'http://localhost:3005/';
 // transcript writes under ~/.claude/projects. No hooks, no config changes.
 const ACTIVITY_DIR = GLib.build_filenamev([GLib.get_home_dir(), '.claude', 'projects']);
 const ACTIVITY_CHECK_SECONDS = 6;  // cheap probe: any transcript newer than last check?
-const THROTTLE_SECONDS = 30;       // refresh cswap at most once per this window
+const THROTTLE_SECONDS = 60;       // refresh cswap at most once per this window
 
 // percent = quota CONSUMED (100 = exhausted), so higher is worse.
 function colorFor(pct) {

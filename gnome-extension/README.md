@@ -22,8 +22,8 @@ Edit `claude-usage@local/extension.js`:
 
 - `ACTIVITY_CHECK_SECONDS` — how often to probe for Claude activity (default `6`).
 - `THROTTLE_SECONDS` — minimum gap between `cswap` refreshes; bursts of concurrent
-  activity collapse into one trailing refresh (default `30`). Raise this if it refreshes
-  too fast.
+  activity collapse into one trailing refresh (default `60`). Keep it above `cswap`'s
+  own 15 s usage-cache TTL; raise it further to reduce calls to the usage API.
 - `ACTIVITY_DIR` — transcript dir watched for activity (default `~/.claude/projects`).
 - `ENDPOINT` / `MONITOR_URL` — change if the monitor runs on another host/port.
 - `colorFor(pct)` — thresholds and colors.
