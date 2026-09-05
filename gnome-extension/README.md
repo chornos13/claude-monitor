@@ -1,37 +1,12 @@
 # Claude Usage — GNOME Shell top-bar indicator
 
-Shows the **active** Claude account's **5h quota %** in the GNOME top bar.
+Shows the **active** Claude account's **5h quota %** in the GNOME top bar,
+read from this project's `GET /api/status` endpoint (`http://localhost:3005`).
 
 ![indicator](claude-usage@local/icon.png) `35%` — colored green (<70%) / amber (70–90%) / red (≥90%).
-Click it for a dropdown listing every account's `5h / 7d` numbers, when the data was last
-updated, and **Open Claude Monitor**.
+Click it for a dropdown listing every account's `5h / 7d` numbers, **Refresh now**, and **Open Claude Monitor**.
 
 Tested on GNOME Shell 46 (Xorg), GJS 1.80.
-
-## How it reads data — fully decoupled, zero API calls
-
-This extension is a **passive reader of cswap's own local files**. It does **not** run
-`cswap`, does **not** call the monitor's `/api/status`, and does **not** touch the Anthropic
-usage API — so it **cannot contribute to usage-API rate limiting**. It reads:
-
-- `~/.local/share/claude-swap/sequence.json` → `activeAccountNumber` + account emails
-- `~/.local/share/claude-swap/cache/usage.json` → each account's cached `5h` / `7d` %
-
-The numbers are as fresh as whatever **legitimately** last ran `cswap --list` (its monitor's
-own background poll, a manual `cswap` invocation, or opening the dashboard) wrote to the cache.
-An active account with no cached number yet (stale, or a failed/rate-limited fetch) shows `—`.
-
-> **Why this design:** an earlier version polled `/api/status`, which makes `cswap` hit the
-> live Anthropic usage API for every account on each refresh. Any cadence faster than cswap's
-> internal 15 s cache — combined with the dashboard and cswap's own poll — produced enough
-> `oauth/usage` traffic to get rate-limited. Reading the cache removes that entirely.
-
-## Updates
-
-- The top-bar label updates **instantly** via a `Gio` directory watch on
-  `~/.local/share/claude-swap/` — whenever `usage.json` or `sequence.json` changes, it re-reads.
-- The dropdown list is rebuilt when the menu is opened (a free local read).
-- There are **no timers and no network calls** in this extension.
 
 ## Install
 
@@ -45,6 +20,31 @@ gnome-extensions enable claude-usage@local
 
 Edit `claude-usage@local/extension.js`:
 
-- `CACHE_FILE` / `SEQUENCE_FILE` — cswap file locations (default `~/.local/share/claude-swap/…`).
-- `MONITOR_URL` — dashboard URL opened from the menu.
+- `ACTIVITY_CHECK_SECONDS` — how often to probe for Claude activity (default `6`).
+- `THROTTLE_SECONDS` — minimum gap between refreshes (default `300`, i.e. 5 min).
+- `ACTIVITY_DIR` — transcript dir watched for activity (default `~/.claude/projects`).
+- `ENDPOINT` / `MONITOR_URL` — change if the monitor runs on another host/port.
 - `colorFor(pct)` — thresholds and colors.
+
+## When it refreshes
+
+The top-bar label (active account's 5h %) is **activity-driven and decoupled from your
+Claude config** — no hooks, no settings changes. Every `ACTIVITY_CHECK_SECONDS` it runs a
+cheap `find ... -newermt -quit` probe over `~/.claude/projects`; only when a transcript was
+written since the last check does it call `/api/status` (which runs `cswap`) to refresh.
+Refreshes are throttled to **at most once per `THROTTLE_SECONDS`**, so bursts of concurrent
+activity collapse into a single trailing refresh. There is no fallback timer — if nothing
+writes a transcript, nothing runs beyond the probe.
+
+The **full account list** in the dropdown is fetched only when the menu is opened
+(or via **Refresh now**) — never on the timer.
+
+## Why the 5-minute throttle
+
+`/api/status` makes `cswap --list` hit the live Anthropic usage API
+(`api.anthropic.com/api/oauth/usage`) for **every** account. That endpoint is rate-limited
+**per account/token**, and `cswap` only caches results for 15 s — so a fast refresh cadence,
+stacked with the dashboard and cswap's own background poll, can trip a 429 (usage then shows
+as `—` / `0%` until it clears). A 5-minute throttle keeps this indicator's contribution at
+roughly the same cadence as the monitor's own background poll, well clear of the limit.
+Lower it only if you understand that trade-off.

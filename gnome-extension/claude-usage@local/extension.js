@@ -9,42 +9,20 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
-// Fully decoupled from cswap / the Anthropic usage API: this extension ONLY
-// reads cswap's local files. It never runs cswap and never triggers a fetch,
-// so it cannot contribute to usage-API rate limiting. The numbers are as fresh
-// as whatever last legitimately ran `cswap --list` (its monitor's own poll,
-// a manual list, or opening the dashboard) wrote to the cache.
-const HOME = GLib.get_home_dir();
-const SWAP_DIR = GLib.build_filenamev([HOME, '.local', 'share', 'claude-swap']);
-const CACHE_FILE = GLib.build_filenamev([SWAP_DIR, 'cache', 'usage.json']);   // per-account 5h/7d %
-const SEQUENCE_FILE = GLib.build_filenamev([SWAP_DIR, 'sequence.json']);       // activeAccountNumber + emails
+const ENDPOINT = 'http://localhost:3005/api/status';
 const MONITOR_URL = 'http://localhost:3005/';
+
+// Decoupled activity detection: we passively observe Claude Code's own
+// transcript writes under ~/.claude/projects. No hooks, no config changes.
+const ACTIVITY_DIR = GLib.build_filenamev([GLib.get_home_dir(), '.claude', 'projects']);
+const ACTIVITY_CHECK_SECONDS = 6;  // cheap probe: any transcript newer than last check?
+const THROTTLE_SECONDS = 300;      // refresh cswap at most once per this window (5 min)
 
 // percent = quota CONSUMED (100 = exhausted), so higher is worse.
 function colorFor(pct) {
     if (pct >= 90) return '#f87171'; // red
     if (pct >= 70) return '#fbbf24'; // amber
     return '#4ade80';                // green
-}
-
-function readJson(path) {
-    try {
-        const [ok, contents] = Gio.File.new_for_path(path).load_contents(null);
-        if (!ok)
-            return null;
-        return JSON.parse(new TextDecoder().decode(contents));
-    } catch (e) {
-        return null;
-    }
-}
-
-function ageText(tsSeconds) {
-    if (!tsSeconds)
-        return 'unknown';
-    const secs = Math.max(0, Math.floor(Date.now() / 1000 - tsSeconds));
-    if (secs < 60) return `${secs}s ago`;
-    if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-    return `${Math.floor(secs / 3600)}h ago`;
 }
 
 const Indicator = GObject.registerClass(
@@ -69,123 +47,158 @@ class Indicator extends PanelMenu.Button {
         this.menu.addMenuItem(this._accountsSection);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
+        const refreshItem = new PopupMenu.PopupMenuItem('Refresh now');
+        refreshItem.connect('activate', () => this._refresh(true));
+        this.menu.addMenuItem(refreshItem);
+
+        // Rebuild the full account list only when the menu is opened.
+        this.menu.connect('open-state-changed', (_menu, isOpen) => {
+            if (isOpen)
+                this._refresh(true);
+        });
+
         const openItem = new PopupMenu.PopupMenuItem('Open Claude Monitor');
         openItem.connect('activate', () => {
             Gio.AppInfo.launch_default_for_uri(MONITOR_URL, null);
         });
         this.menu.addMenuItem(openItem);
-
-        // Rebuild the full account list only when the menu is opened (free: local read).
-        this.menu.connect('open-state-changed', (_menu, isOpen) => {
-            if (isOpen)
-                this._rebuildMenu();
-        });
     }
 
-    // Reads the two local files. Returns {activeNum, accounts:[{num,email}], usage, ts} or null.
-    _read() {
-        const seq = readJson(SEQUENCE_FILE);
-        const cache = readJson(CACHE_FILE);
-        if (!seq)
-            return null;
-        const accounts = (seq.sequence ?? []).map((num) => ({
-            num: String(num),
-            email: seq.accounts?.[String(num)]?.email ?? `#${num}`,
-        }));
-        return {
-            activeNum: String(seq.activeAccountNumber ?? ''),
-            accounts,
-            usage: cache?.data ?? {},
-            ts: cache?.timestamp ?? 0,
-        };
-    }
-
-    // Top bar: active account's 5h % only.
-    _renderLabel() {
-        const data = this._read();
-        if (!data) {
-            this._label.set_text('—');
-            this._label.set_style('color: #9ca3af;');
-            return;
+    // updateMenu=false -> only the top-bar (active) label is updated (the 30s timer).
+    // updateMenu=true  -> also rebuild the full account list (only when menu opens).
+    _refresh(updateMenu = false) {
+        try {
+            const proc = Gio.Subprocess.new(
+                ['curl', '-s', '-m', '5', ENDPOINT],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+            );
+            proc.communicate_utf8_async(null, null, (p, res) => {
+                try {
+                    const [, stdout] = p.communicate_utf8_finish(res);
+                    this._render(JSON.parse(stdout), updateMenu);
+                } catch (e) {
+                    this._label.set_text('offline');
+                    this._label.set_style('color: #9ca3af;');
+                }
+            });
+        } catch (e) {
+            this._label.set_text('err');
         }
-        const u = data.usage[data.activeNum];
-        const pct = u?.five_hour?.pct;
-        if (pct === undefined || pct === null) {
-            // Active account has no cached usage yet (stale / fetch failed).
-            this._label.set_text('—');
-            this._label.set_style('color: #9ca3af;');
+    }
+
+    _render(data, updateMenu) {
+        const accounts = data?.output?.accounts ?? [];
+        // Top bar reflects ONLY the currently active account.
+        const active = accounts.find(a => a.isActive);
+
+        if (active) {
+            const p5 = active.quota5h?.percent ?? 0;
+            this._label.set_text(`${p5}%`);
+            this._label.set_style(`color: ${colorFor(p5)}; font-feature-settings: "tnum";`);
         } else {
-            const p = Math.round(pct);
-            this._label.set_text(`${p}%`);
-            this._label.set_style(`color: ${colorFor(p)}; font-feature-settings: "tnum";`);
+            this._label.set_text('—');
+            this._label.set_style('color: #9ca3af;');
         }
-    }
 
-    _rebuildMenu() {
-        this._accountsSection.removeAll();
-        const data = this._read();
-
-        if (!data) {
-            this._accountsSection.addMenuItem(
-                new PopupMenu.PopupMenuItem('cswap data not found', {reactive: false}));
+        if (!updateMenu)
             return;
-        }
 
+        // Rebuild dropdown: one line per account.
+        this._accountsSection.removeAll();
         const header = new PopupMenu.PopupMenuItem('Account          5h / 7d', {reactive: false});
         header.label.set_style('font-weight: 700;');
         this._accountsSection.addMenuItem(header);
 
-        for (const a of data.accounts) {
-            const u = data.usage[a.num];
-            const p5 = u?.five_hour?.pct;
-            const p7 = u?.seven_day?.pct;
-            const isActive = a.num === data.activeNum;
-            const email = a.email.length > 22 ? a.email.slice(0, 21) + '…' : a.email;
-            const mark = isActive ? '● ' : '  ';
-
-            const item = new PopupMenu.PopupMenuItem(`${mark}${email}`);
-            const txt = (p5 === undefined || p5 === null)
-                ? '—'
-                : `${Math.round(p5)}% / ${p7 === undefined || p7 === null ? '—' : Math.round(p7) + '%'}`;
-            const stats = new St.Label({text: txt, y_align: Clutter.ActorAlign.CENTER});
-            const c = (p5 === undefined || p5 === null)
-                ? '#9ca3af'
-                : colorFor(Math.max(p5, p7 ?? 0));
-            stats.set_style(`color: ${c};`);
+        for (const a of accounts) {
+            const email = a.email ?? `#${a.index}`;
+            const short = email.length > 22 ? email.slice(0, 21) + '…' : email;
+            const p5 = a.quota5h?.percent ?? 0;
+            const p7 = a.quota7d?.percent ?? 0;
+            const mark = a.isActive ? '● ' : '  ';
+            const item = new PopupMenu.PopupMenuItem(`${mark}${short}`);
+            const stats = new St.Label({
+                text: `${p5}% / ${p7}%`,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            stats.set_style(`color: ${colorFor(Math.max(p5, p7))};`);
             item.add_child(stats);
-            item.connect('activate', () => Gio.AppInfo.launch_default_for_uri(MONITOR_URL, null));
+            item.connect('activate', () => {
+                Gio.AppInfo.launch_default_for_uri(MONITOR_URL, null);
+            });
             this._accountsSection.addMenuItem(item);
         }
-
-        const foot = new PopupMenu.PopupMenuItem(`updated ${ageText(data.ts)}`, {reactive: false});
-        foot.label.set_style('font-size: 0.85em; color: #9ca3af;');
-        this._accountsSection.addMenuItem(foot);
     }
 
-    // Watch the directories (survives in-place writes and atomic replaces alike).
-    startWatching() {
-        this._renderLabel();
-
-        this._monitors = [];
-        for (const dir of [GLib.path_get_dirname(CACHE_FILE), SWAP_DIR]) {
-            try {
-                const m = Gio.File.new_for_path(dir).monitor_directory(Gio.FileMonitorFlags.NONE, null);
-                m.connect('changed', (_m, file) => {
-                    const name = file?.get_basename();
-                    if (name === 'usage.json' || name === 'sequence.json')
-                        this._renderLabel();
-                });
-                this._monitors.push(m);
-            } catch (e) {
-                // ignore — a missing dir just means no live updates until it exists
-            }
+    // Returns true if any Claude transcript was written since `sinceEpoch`.
+    // `-quit` stops at the first match, so this is cheap even with many files.
+    _hasActivitySince(sinceEpoch, cb) {
+        try {
+            const proc = Gio.Subprocess.new(
+                ['find', ACTIVITY_DIR, '-name', '*.jsonl',
+                 '-newermt', `@${sinceEpoch}`, '-print', '-quit'],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+            );
+            proc.communicate_utf8_async(null, null, (p, res) => {
+                try {
+                    const [, stdout] = p.communicate_utf8_finish(res);
+                    cb(stdout.trim().length > 0);
+                } catch (e) {
+                    cb(false);
+                }
+            });
+        } catch (e) {
+            cb(false);
         }
     }
 
-    stopWatching() {
-        for (const m of this._monitors ?? [])
-            m.cancel();
-        this._monitors = null;
+    // Throttled label refresh: at most one cswap hit per THROTTLE_SECONDS.
+    // A burst of concurrent activity collapses into a single trailing refresh.
+    _refreshThrottled() {
+        const now = GLib.get_real_time() / 1e6;
+        const elapsed = now - this._lastRefresh;
+
+        if (elapsed >= THROTTLE_SECONDS) {
+            this._lastRefresh = now;
+            this._refresh(false);
+        } else if (!this._throttleTimer) {
+            // Schedule one catch-up refresh at the end of the current window.
+            const wait = Math.ceil(THROTTLE_SECONDS - elapsed);
+            this._throttleTimer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, wait, () => {
+                this._throttleTimer = null;
+                this._lastRefresh = GLib.get_real_time() / 1e6;
+                this._refresh(false);
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+    }
+
+    startPolling() {
+        this._lastCheck = GLib.get_real_time() / 1e6; // epoch seconds
+        this._lastRefresh = GLib.get_real_time() / 1e6;
+        this._throttleTimer = null;
+        this._refresh(false);
+
+        // Activity-driven refresh: probe transcripts; only hit cswap on new activity.
+        this._activityTimer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, ACTIVITY_CHECK_SECONDS, () => {
+            const since = Math.floor(this._lastCheck);
+            this._lastCheck = GLib.get_real_time() / 1e6;
+            this._hasActivitySince(since, (active) => {
+                if (active)
+                    this._refreshThrottled();
+            });
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    stopPolling() {
+        if (this._activityTimer) {
+            GLib.source_remove(this._activityTimer);
+            this._activityTimer = null;
+        }
+        if (this._throttleTimer) {
+            GLib.source_remove(this._throttleTimer);
+            this._throttleTimer = null;
+        }
     }
 });
 
@@ -193,11 +206,11 @@ export default class ClaudeUsageExtension extends Extension {
     enable() {
         this._indicator = new Indicator(this.path);
         Main.panel.addToStatusArea('claude-usage', this._indicator);
-        this._indicator.startWatching();
+        this._indicator.startPolling();
     }
 
     disable() {
-        this._indicator?.stopWatching();
+        this._indicator?.stopPolling();
         this._indicator?.destroy();
         this._indicator = null;
     }
