@@ -1,0 +1,9 @@
+{
+  "uuid": "claude-usage@local",
+  "name": "Claude Usage",
+  "description": "Shows the active Claude account's quota (5h / 7d) in the top bar, polled from the local Claude Monitor (claude-swap) at http://localhost:3005/api/status.",
+  "shell-version": ["45", "46", "47", "48"],
+  "settings-schema": "",
+  "url": "",
+  "version": 1
+}
