@@ -16,6 +16,7 @@ const MONITOR_URL = 'http://localhost:3005/';
 // transcript writes under ~/.claude/projects. No hooks, no config changes.
 const ACTIVITY_DIR = GLib.build_filenamev([GLib.get_home_dir(), '.claude', 'projects']);
 const ACTIVITY_CHECK_SECONDS = 6;  // cheap probe: any transcript newer than last check?
+const THROTTLE_SECONDS = 30;       // refresh cswap at most once per this window
 
 // percent = quota CONSUMED (100 = exhausted), so higher is worse.
 function colorFor(pct) {
@@ -150,8 +151,31 @@ class Indicator extends PanelMenu.Button {
         }
     }
 
+    // Throttled label refresh: at most one cswap hit per THROTTLE_SECONDS.
+    // A burst of concurrent activity collapses into a single trailing refresh.
+    _refreshThrottled() {
+        const now = GLib.get_real_time() / 1e6;
+        const elapsed = now - this._lastRefresh;
+
+        if (elapsed >= THROTTLE_SECONDS) {
+            this._lastRefresh = now;
+            this._refresh(false);
+        } else if (!this._throttleTimer) {
+            // Schedule one catch-up refresh at the end of the current window.
+            const wait = Math.ceil(THROTTLE_SECONDS - elapsed);
+            this._throttleTimer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, wait, () => {
+                this._throttleTimer = null;
+                this._lastRefresh = GLib.get_real_time() / 1e6;
+                this._refresh(false);
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+    }
+
     startPolling() {
         this._lastCheck = GLib.get_real_time() / 1e6; // epoch seconds
+        this._lastRefresh = GLib.get_real_time() / 1e6;
+        this._throttleTimer = null;
         this._refresh(false);
 
         // Activity-driven refresh: probe transcripts; only hit cswap on new activity.
@@ -160,7 +184,7 @@ class Indicator extends PanelMenu.Button {
             this._lastCheck = GLib.get_real_time() / 1e6;
             this._hasActivitySince(since, (active) => {
                 if (active)
-                    this._refresh(false);
+                    this._refreshThrottled();
             });
             return GLib.SOURCE_CONTINUE;
         });
@@ -170,6 +194,10 @@ class Indicator extends PanelMenu.Button {
         if (this._activityTimer) {
             GLib.source_remove(this._activityTimer);
             this._activityTimer = null;
+        }
+        if (this._throttleTimer) {
+            GLib.source_remove(this._throttleTimer);
+            this._throttleTimer = null;
         }
     }
 });

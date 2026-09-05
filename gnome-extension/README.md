@@ -21,6 +21,9 @@ gnome-extensions enable claude-usage@local
 Edit `claude-usage@local/extension.js`:
 
 - `ACTIVITY_CHECK_SECONDS` — how often to probe for Claude activity (default `6`).
+- `THROTTLE_SECONDS` — minimum gap between `cswap` refreshes; bursts of concurrent
+  activity collapse into one trailing refresh (default `30`). Raise this if it refreshes
+  too fast.
 - `ACTIVITY_DIR` — transcript dir watched for activity (default `~/.claude/projects`).
 - `ENDPOINT` / `MONITOR_URL` — change if the monitor runs on another host/port.
 - `colorFor(pct)` — thresholds and colors.
@@ -31,8 +34,10 @@ The top-bar label (active account's 5h %) is **activity-driven and decoupled** �
 it does not modify your Claude config or hooks. Every `ACTIVITY_CHECK_SECONDS` it runs
 a cheap `find ... -newermt -quit` probe over `~/.claude/projects`; only when a transcript
 was written since the last check does it call `cswap` (via `/api/status`) to refresh.
-So `cswap` is invoked on real activity, not on a blind timer. There is no fallback timer —
-if nothing writes a transcript, nothing runs beyond the probe.
+So `cswap` is invoked on real activity, not on a blind timer. The refresh is throttled to
+at most once per `THROTTLE_SECONDS`, so bursts of concurrent activity collapse into a
+single trailing refresh instead of hammering `cswap`. There is no fallback timer — if
+nothing writes a transcript, nothing runs beyond the probe.
 
 The **full account list** in the dropdown is fetched only when the menu is opened
 (or via **Refresh now**) — never on the timers.
